@@ -10,22 +10,514 @@ PHP-FPM|8.3|Thực thi code php
 NGINX|latest|Web service đóng vai trò cửa ngõ cho ứng dụng và điều hướng request tới PHP-FPM
 MariaDB|10.2-10.6|Cơ sở dữ liệu quan hệ, có thể sử dụng MySQL
 Redis|latest|Cơ sử dữ liệu phi quan hệ, để lưu trữ cache
-Varnish||Một Page cache service giúp tối ưu thời gian tải trang và chỉ tải lại những phần cần thiết
+Varnish|6.x|Một Page cache service giúp tối ưu thời gian tải trang và chỉ tải lại những phần cần thiết
 Elasticsearch|7.x|Search Engine được sử dụng bởi Magento
+phpmyadmin (*)|latest|Hệ quản trị CSDL để thao tác với database
 ---
+
+> *(\*) : Optional - có thể cài hoặc không*
 #### Biểu đồ phụ thuộc
 ![Bieu do phu thuoc](./images/docker-dependancy.png)
 
-## 2. Chuẩn bị
+## 2. Build Magento 2 docker image
 
 ### a. Tải magento open source (bản community)
 Sử dụng composer, thực hiện theo [magento doc](https://experienceleague.adobe.com/en/docs/commerce-operations/installation-guide/composer)
 ```bash
-composer create-project --repository-url=https://repo.magento.com/ magento/project-community-edition <install-directory-name> --ignore-platform-reqs
+composer create-project --repository-url=https://repo.magento.com/ magento/project-community-edition path/to/install/folder --ignore-platform-reqs
 ```
-
-`--ignore-platform-reqs` flag dùng thông báo cho composer biết là cài đặt không cần quan tâm tới requirement của môi trường
-
-Do cài đặt bằng composer, tức là folder vendor đã được cài đặt
+- *--ignore-platform-reqs*: flag dùng thông báo cho composer biết là cài đặt không cần quan tâm tới requirement của môi trường
+- *path/to/install/folder*: Đường dẫn tới folder chứa code
 
 ### b. Viết Dockerfile
+```Dockerfile
+### File Dockerfile
+
+FROM php:8.3-fpm-alpine
+
+# Set working directory
+WORKDIR /var/www/html
+
+RUN mv "$PHP_INI_DIR/php.ini-production" "$PHP_INI_DIR/php.ini"
+
+# Install necessary dependencies for Magento
+RUN apk update && apk add --no-cache \
+    bash \
+    curl \
+    git \
+    icu-dev \
+    libpng-dev \
+    libjpeg-turbo-dev \
+    freetype-dev \
+    libzip-dev \
+    libxml2-dev \
+    oniguruma-dev \
+    libxslt-dev \
+    supervisor \
+    mysql-client \
+    openssh \
+    g++ \
+    autoconf \
+    make \
+    shadow \
+    zlib-dev \
+    linux-headers \
+    && docker-php-ext-configure gd \
+        --with-freetype \
+        --with-jpeg \
+    && docker-php-ext-install \
+        bcmath \
+        gd \
+        intl \
+        mbstring \
+        opcache \
+        pdo_mysql \
+        soap \
+        xsl \
+        zip \
+        sockets
+
+# Install Composer
+RUN curl -sS https://getcomposer.org/installer | php -- --install-dir=/usr/local/bin --filename=composer
+
+COPY . .
+
+CMD ["php-fpm"]
+```
+
+File `.dockerignore` trong project root giúp bỏ đi các phần thừa khi build image, giúp giảm dung lượng image
+
+```
+# Ignore everything by default
+*
+
+# Allow essential files and directories
+!app/
+!bin/
+!lib/
+!phpserver/
+!pub/
+!setup/
+!var/
+!generated/
+!m2-hotfixes/
+!nginx.conf.sample
+!docker-compose.yml
+
+# Allow important files in the root directory
+!auth.json
+!composer.json
+!composer.lock
+!.env
+!.gitignore
+!.magento.env.yaml
+!package.json
+!package-lock.json
+!vendor/.htaccess
+
+# Exclude unnecessary files and directories
+.git/
+node_modules/
+var/cache/
+var/composer_home/
+var/page_cache/
+var/view_preprocessed/
+pub/static/frontend/
+pub/static/adminhtml/
+pub/media/tmp/
+generated/code/
+generated/metadata/
+
+# Ignore IDE-specific and OS-specific files
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Ignore Docker-specific files
+.dockerignore
+Dockerfile
+
+# Ignore logs and temp files
+*.log
+*.tmp
+*.swp
+*.bak
+*.orig
+```
+
+### c. Build image
+
+Chạy command
+```bash
+docker build -t image_name path/to/folder/dockerfile
+```
+- *image_name*: Tên của image, tủy chọn hoặc đặt tên theo rule của các registry platform
+- *path/to/folder/dockerfile*: Đường dẫn nơi chứa file Dockerfile, thông thường đặt trong folder chứa code
+
+## 2. Khởi chạy Docker Container
+
+### a. Cấu trúc folder (Ví dụ demo)
+
+|#|#|#|#|#|
+|--|--|--|--|--|
+|my_docker/
+||docker/
+|||dbdata/||Dữ liệu của MySQL
+|||esdata/||Dữ liệu của Elasticsearch
+|||nginx/
+||||nginx.conf|Config cho webserver
+|||php/
+||||custom.ini|Config custom cho php
+|||composer/
+||||auth.json|Config api key cho composer
+|||varnish/
+||||default.vcl|Config cho varnish, được generate qua magento command
+||source/
+|||...||Code magento
+|||nginx.conf.sample||Config nginx có sẵn cung cấp bởi magento
+|||Dockerfile||Khai báo cho build image
+||docker-compose.yml|||Khai báo cho khởi chạy các container
+||.env|||Khai báo biến môi trường dùng cho `docker-compose.yml`. Có thể dùng hoặc không.
+
+### b. Viết docker-compose.yml
+
+```yml
+version: '3.8'
+
+services:
+  app:
+    image: learning-docker/magento-v3
+    restart: always
+    volumes:
+      - ./docker/php/custom.ini:/usr/local/etc/php/conf.d/custom.ini
+      - ./docker/composer/auth.json:/var/www/html/var/composer_home/auth.json
+      - ./source:/var/www/html
+    environment:
+      BASE_URL: ${APP_BASE_URL}
+      DB_HOST: ${MYSQL_HOST}
+      DB_NAME: ${MYSQL_DATABASE}
+      DB_USER: ${MYSQL_USER}
+      DB_PASSWORD: ${MYSQL_PASSWORD}
+      ADMIN_EMAIL: ${APP_ADMIN_EMAIL}
+      ADMIN_FIRSTNAME: ${APP_ADMIN_FIRSTNAME}
+      ADMIN_LASTNAME: ${APP_ADMIN_LASTNAME}
+      ADMIN_USER: ${APP_ADMIN_USER}
+      ADMIN_PASSWORD: ${APP_ADMIN_PASSWORD}
+      ADMIN_FRONT_NAME: ${APP_ADMIN_FRONT_NAME}
+      LANGUAGE: ${APP_LANGUAGE}
+      CURRENCY: ${APP_CURRENCY}
+      TIMEZONE: ${APP_TIMEZONE}
+      SEARCH_ENGINE: ${APP_SEARCH_ENGINE}
+      ES_HOST: ${ELASTICSEARCH_HOST}
+      ES_PORT: ${ELASTICSEARCH_PORT}
+      ES_INDEX_PREFIX: ${APP_ES_INDEX_PREFIX}
+      ES_ENABLE_AUTH: ${APP_ES_ENABLE_AUTH}
+      ES_TIMEOUT: ${APP_ES_TIMEOUT}
+    depends_on:
+      - db
+      - redis
+      - elasticsearch
+  nginx:
+    image: nginx:1.21-alpine
+    restart: always
+    volumes:
+      - ./source:/var/www/html
+      - ./docker/nginx/default.conf:/etc/nginx/conf.d/default.conf
+    depends_on:
+      - app
+  db:
+    image: mariadb:10.5
+    restart: always
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+      MYSQL_DATABASE: ${MYSQL_DATABASE}
+      MYSQL_USER: ${MYSQL_USER}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD}
+    volumes:
+      - ./docker/dbdata:/var/lib/mysql
+  redis:
+    image: redis:alpine
+    restart: always
+  elasticsearch:
+    image: elasticsearch:7.17.26
+    restart: always
+    environment:
+      - discovery.type=single-node
+      - bootstrap.memory_lock=true
+      - "ES_JAVA_OPTS=-Xms512m -Xmx512m"
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+    volumes:
+      - ./docker/esdata:/usr/share/elasticsearch/data
+  varnish_cache:
+    image: varnish:6.6-alpine
+    restart: always
+    volumes:
+      - ./docker/varnish/varnish.vcl:/etc/varnish/default.vcl
+    ports:
+      - "${VARNISH_PORT}:80"
+    depends_on:
+      - nginx
+  phpmyadmin:
+    image: phpmyadmin/phpmyadmin
+    restart: always
+    links:
+      - 'db:db'
+    ports:
+      - '${PHPMYADMIN_PORT}:80'
+    environment:
+      MYSQL_USER: ${MYSQL_USER}
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+      PMA_HOST: ${MYSQL_HOST}
+    depends_on:
+      - db
+```
+#### - Thứ tự khởi tạo các Container
+1. `db` + `redis` + `elasticsearch`: không có phụ thuộc
+2. `app` + `phpmyadmin`
+    - `app` phụ thuộc `db` + `redis` + `elasticsearch`
+    - `phpmyadmin` phụ thuộc `db`
+3. `nginx`: phụ thuộc `app`
+4. `varnish_cache`: phụ thuộc `nginx`
+
+#### - Khởi chạy container theo *docker-compose.yml*
+```shell
+cd /path/to/my_docker/
+docker compose up -d
+```
+- `-d`: cho phép chạy container ở chế độ detach, chạy trong nền
+- command này còn cho phép cập nhật phiên bản mới cho container nếu image tương ứng được thay thế bằng image khác
+
+#### - Loại bỏ container đã được khởi chạy theo *docker-compose.yml*
+```shell
+cd /path/to/my_docker/
+docker compose down
+```
+
+#### - Start/Stop container đã được khởi chạy
+```shell
+cd /path/to/my_docker/
+docker compose start
+docker compose stop
+```
+
+#### - Đăng nhập vào bash terminal của một container cụ thể
+```shell
+# `docker compose exec ten_service sh`
+cd /path/to/my_docker/
+docker compose exec app sh
+```
+
+## 3. Deploy magento
+
+Sau khi các container đã được khởi chạy, bước tiếp theo là deploy magento và sample data (cho bản demo).
+
+> Lưu ý: Hướng dẫn dưới đây dành cho bản magento default, không áp dụng cho dự án có sẵn.
+
+---
+### 3.1. Bên ngoài container
+
+```bash
+## 1. Khởi chạy container
+cd /path/to/my_docker/
+docker compose start
+
+## 2. Đăng nhập vào terminal của container chứa magento, tên là `app`
+docker compose exec app sh
+```
+
+### 3.2. Bên trong container `app`
+Mặc định khi đăng nhập vào bash terminal, folder mặc định là `/var/www/html/`
+
+#### 1. Vào folder code (nếu cần)
+```bash
+cd /var/www/html
+```
+
+#### 2. Rebuild vendor và apply magento patches (nếu cần)
+```bash
+composer remove 
+composer install
+```
+
+#### 3. Cấp quyền file và thư mục
+```sh
+find var generated vendor pub/static pub/media app/etc -type f -exec chmod u+w {} +
+find var generated vendor pub/static pub/media app/etc -type d -exec chmod u+w {} +
+chmod u+x bin/magento
+```
+
+#### 4. Khởi chạy trình cài đặt lần đầu hệ thống magento
+```sh
+bin/magento setup:install \
+    --base-url=$BASE_URL \
+    --db-host=$DB_HOST \
+    --db-name=$DB_NAME \
+    --db-user=$DB_USER \
+    --db-password=$DB_PASSWORD \
+    --admin-firstname=$ADMIN_FIRSTNAME \
+    --admin-lastname=$ADMIN_LASTNAME \
+    --admin-email=$ADMIN_EMAIL \
+    --admin-user=$ADMIN_USER \
+    --admin-password=$ADMIN_PASSWORD \
+    --language=$LANGUAGE \
+    --currency=$CURRENCY \
+    --timezone=$TIMEZONE \
+    --use-rewrites=1 \
+    --backend-frontname=$ADMIN_FRONT_NAME \
+    --search-engine=$SEARCH_ENGINE \
+    --elasticsearch-host=$ES_HOST \
+    --elasticsearch-port=$ES_PORT \
+    --elasticsearch-index-prefix=$ES_INDEX_PREFIX \
+    --elasticsearch-enable-auth=$ES_ENABLE_AUTH \
+    --elasticsearch-timeout=$ES_TIMEOUT
+```
+
+#### 5. Thiết lập hệ thống cache mặc định của magento sử dụng qua redis service
+```sh
+bin/magento setup:config:set \
+    --cache-backend=redis \
+    --cache-backend-redis-server=$REDIS_HOST  \
+    --cache-backend-redis-port=$REDIS_PORT \
+    --page-cache=redis \
+    --page-cache-redis-server=$REDIS_HOST  \
+    --page-cache-redis-port=$REDIS_PORT \
+    --page-cache-redis-db=1 \
+    --session-save=redis \
+    --session-save-redis-host=$REDIS_HOST \
+    --session-save-redis-port=$REDIS_PORT \
+    --session-save-redis-db=2 \
+    --session-save-redis-log-level=4 \
+    --no-interaction
+```
+---
+
+#### 6. Thiết lập sử dụng `Varnish` là FPC engine mặc định
+```sh
+bin/magento config:set \
+    --scope=default \
+    --scope-code=0 \
+    system/full_page_cache/caching_application 2
+```
+---
+#### 7. Xuất thông tin cài đặt varnish cache, sau khi có output, copy và paste vào file `/path/to/my_docker/docker/varnish/default.vcl`
+```sh
+bin/magento varnish:vcl:generate
+```
+
+#### 7.1. Restart service `varnish_cache`, thực hiện bên ngoài container
+```sh
+docker compose restart varnish_cache
+```
+---
+
+#### 8. Cài đặt magento job scheduler
+```sh
+bin/magento cron:install
+```
+---
+Kiểm tra thông tin cài đặt cronjob (optional):
+```sh
+crontab -l
+```
+Output dạng như sau tức là thành công
+```
+...
+#~ MAGENTO START 69dd2b02e1f3a65918182048ea4e29979a849d8942e8f53ed20a4bf10e529b36
+* * * * * /usr/local/bin/php /var/www/html/bin/magento cron:run 2>&1 | grep -v "Ran jobs by schedule" >> /var/www/html/var/log/magento.cron.log
+#~ MAGENTO END 69dd2b02e1f3a65918182048ea4e29979a849d8942e8f53ed20a4bf10e529b36
+...
+```
+---
+#### 9. Disable module 2FA
+Do là local development thì không cần nó, vậy nên có thể disable để có thể đăng nhập admin
+```sh
+bin/magento module:disable Magento_TwoFactorAuth Magento_AdminAdobeImsTwoFactorAuth
+```
+---
+#### 10. Deploy Magento
+```sh
+# production mode: Khi triển khai trên môi trường production
+bin/magento maintenance:enable
+bin/magento deploy:mode:set production -s
+bin/magento setup:upgrade
+bin/magento setup:static-content:deploy
+bin/magento setup:di:compile
+find var generated vendor pub/static pub/media app/etc -type f -exec chmod 644 {} +
+find var generated vendor pub/static pub/media app/etc -type d -exec chmod 755 {} +
+chmod u+x bin/magento
+bin/magento c:f
+bin/magento maintenance:disable
+```
+```sh
+# development mode: Khi triển khai trên môi trường development
+bin/magento maintenance:enable
+bin/magento deploy:mode:set developer -s
+bin/magento setup:upgrade
+bin/magento maintenance:disable
+find var generated vendor pub/static pub/media app/etc -type f -exec chmod 777 {} +
+find var generated vendor pub/static pub/media app/etc -type d -exec chmod 777 {} +
+```
+> *Tip: có thể đưa 2 loại deploy vào file bash script và cấp quyền executable (`chmod u+x ten_file`). \
+Ex: `deploy-production.sh` / `deploy-develop.sh`*
+---
+#### 11. Patch file `vendor/magento/module-elasticsearch/etc/esconfig.xsd` (optional)
+Trong TH gặp lỗi khi `setup:upgrade`
+```
+1 exception(s):
+Exception #0 (Magento\Framework\Config\Dom\ValidationSchemaException): Processed schema file: /path/to/magento/vendor/magento/module-elasticsearch/etc/esconfig.xsd
+complex type 'mixedDataType': The content model is not determinist.
+Line: 18
+```
+Backup và thay thế nội dung của file như sau:
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+/**
+ * This schema must be used to validate esconfig.xml files
+ *
+ * Copyright © Magento, Inc. All rights reserved.
+ * See COPYING.txt for license details.
+ */
+-->
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+<xs:element name="config" type="configType" />
+<xs:complexType name="configType" mixed="true">
+    <xs:choice maxOccurs="unbounded" minOccurs="1">
+        <xs:element name="stemmer" type="stemmerDataType" />
+        <xs:element name="stopwords_file" type="stopwordsDataType" />
+    </xs:choice>
+</xs:complexType>
+<xs:complexType name="stemmerDataType">
+    <xs:sequence>
+        <xs:element type="xs:string" name="type" minOccurs="1" maxOccurs="1"/>
+        <xs:element type="xs:string" name="default" minOccurs="1" maxOccurs="1"/>
+        <xs:any processContents="lax" minOccurs="0" maxOccurs="unbounded"/>
+    </xs:sequence>
+</xs:complexType>
+<xs:complexType name="stopwordsDataType">
+    <xs:sequence>
+        <xs:element type="xs:string" name="default" minOccurs="1" maxOccurs="1"/>
+        <xs:any processContents="lax" minOccurs="0" maxOccurs="unbounded"/>
+    </xs:sequence>
+</xs:complexType>
+</xs:schema>
+```
+
+#### 12. Truy cập vào website
+Theo luồng của các service, khi người dùng truy cập vào thông qua service `varnish cache`, `varnish cache` sẽ kiểm tra cache, nếu không có cache, request sẽ được foward tới service `nginx`, tại đây `nginx` sẽ foward request tới `php-fpm` service để thực thi code php và trả về cho `nginx` và `nginx` trả về `varnish cache`.
+
+Tóm lại, để truy cập website, ta truy cập qua service `varnish cache`, như đã khai báo trong `docker-compose.yml`, `varnish cache` mở port truy cập trên cổng `8080`. Truy cập http://localhost:8080/.
+
+---
+
+Kiểm tra `varnish cache` có cache bằng cách tạm dừng service magento và truy cập lại http://localhost:8080/. Người dùng vẫn sẽ truy cập được do có cache, tuy nhiên khi vào các trang khác không có cache như checkout, cart, etc. thì sẽ gặp lỗi.
+```sh
+docker compose stop app
+```
+> Lưu ý: Vì khi bị lỗi, `varnish cache` cũng cache lại kết quả lỗi, nên cần restart lại service `varnish cache` để thực hiện invalidate cho các response cache
+
+---
