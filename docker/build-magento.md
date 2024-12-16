@@ -13,11 +13,10 @@ Redis|latest|Cơ sử dữ liệu phi quan hệ, để lưu trữ cache
 Varnish|6.x|Một Page cache service giúp tối ưu thời gian tải trang và chỉ tải lại những phần cần thiết
 Elasticsearch|7.x|Search Engine được sử dụng bởi Magento
 phpmyadmin (*)|latest|Hệ quản trị CSDL để thao tác với database
+mailpit (*)|latest|Test mail server dành cho việc gửi nhận email ở local
 ---
 
 > *(\*) : Optional - có thể cài hoặc không*
-#### Biểu đồ phụ thuộc
-![Bieu do phu thuoc](./images/docker-dependancy.png)
 
 ## 2. Build Magento 2 docker image
 
@@ -218,6 +217,7 @@ services:
       - db
       - redis
       - elasticsearch
+      - mailpit
   nginx:
     image: nginx:1.21-alpine
     restart: always
@@ -274,14 +274,52 @@ services:
       PMA_HOST: ${MYSQL_HOST}
     depends_on:
       - db
+  mailpit:
+    image: axllent/mailpit
+    restart: unless-stopped
+    volumes:
+      - ./data:/data
+    ports:
+      - "8025:8025"
+      - "1025:1025"
+    environment:
+      MP_MAX_MESSAGES: 5000
+      MP_DATABASE: /data/mailpit.db
+      MP_SMTP_AUTH_ACCEPT_ANY: 1
+      MP_SMTP_AUTH_ALLOW_INSECURE: 1
 ```
 #### - Thứ tự khởi tạo các Container
-1. `db` + `redis` + `elasticsearch`: không có phụ thuộc
+1. `db` + `redis` + `elasticsearch` + `mailpit`: không có phụ thuộc
 2. `app` + `phpmyadmin`
-    - `app` phụ thuộc `db` + `redis` + `elasticsearch`
+    - `app` phụ thuộc `db` + `redis` + `elasticsearch` + `mailpit`
     - `phpmyadmin` phụ thuộc `db`
 3. `nginx`: phụ thuộc `app`
 4. `varnish_cache`: phụ thuộc `nginx`
+
+#### - Custom `php.ini`
+```ini
+; Chỉnh sửa file ./docker/php/custom.ini
+
+date.timezone=Asia/Ho_Chi_Minh
+opcache.save_comments = 1
+
+; Maximum amount of memory a script may consume (128MB)
+; http://php.net/memory-limit
+memory_limit = 2G
+
+; Maximum allowed size for uploaded files.
+; http://php.net/upload-max-filesize
+upload_max_filesize = 50M
+
+; Sets max size of post data allowed.
+; http://php.net/post-max-size
+post_max_size = 60M
+
+max_execution_time = 18000
+
+; Thiết lập cho app gửi mail tới server mailpit
+sendmail_path=/usr/sbin/sendmail -S mailpit:1025 -t
+```
 
 #### - Khởi chạy container theo *docker-compose.yml*
 ```shell
