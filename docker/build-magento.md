@@ -187,7 +187,7 @@ version: '3.8'
 services:
   app:
     image: learning-docker/magento-v3
-    restart: always
+    restart: unless-stopped
     volumes:
       - ./docker/php/custom.ini:/usr/local/etc/php/conf.d/custom.ini
       - ./docker/composer/auth.json:/var/www/html/var/composer_home/auth.json
@@ -220,7 +220,7 @@ services:
       - mailpit
   nginx:
     image: nginx:1.21-alpine
-    restart: always
+    restart: unless-stopped
     volumes:
       - ./source:/var/www/html
       - ./docker/nginx/default.conf:/etc/nginx/conf.d/default.conf
@@ -228,7 +228,7 @@ services:
       - app
   db:
     image: mariadb:10.5
-    restart: always
+    restart: unless-stopped
     environment:
       MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
       MYSQL_DATABASE: ${MYSQL_DATABASE}
@@ -241,7 +241,7 @@ services:
     restart: always
   elasticsearch:
     image: elasticsearch:7.17.26
-    restart: always
+    restart: unless-stopped
     environment:
       - discovery.type=single-node
       - bootstrap.memory_lock=true
@@ -254,7 +254,7 @@ services:
       - ./docker/esdata:/usr/share/elasticsearch/data
   varnish_cache:
     image: varnish:6.6-alpine
-    restart: always
+    restart: unless-stopped
     volumes:
       - ./docker/varnish/varnish.vcl:/etc/varnish/default.vcl
     ports:
@@ -263,7 +263,7 @@ services:
       - nginx
   phpmyadmin:
     image: phpmyadmin/phpmyadmin
-    restart: always
+    restart: unless-stopped
     links:
       - 'db:db'
     ports:
