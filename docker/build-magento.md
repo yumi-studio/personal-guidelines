@@ -18,6 +18,30 @@ mailpit (*)|latest|Test mail server dành cho việc gửi nhận email ở loca
 
 > *(\*) : Optional - có thể cài hoặc không*
 
+### Tổ chức các folder và file
+
+|#|#|#|#|#|
+|--|--|--|--|--|
+|my_docker/
+||docker/
+|||dbdata/||Dữ liệu của MySQL
+|||esdata/||Dữ liệu của Elasticsearch
+|||nginx/
+||||nginx.conf|Config cho webserver
+|||php/
+||||custom.ini|Config custom cho php
+||||custom-xdebug.ini|Config cho xdebug
+|||composer/
+||||auth.json|Config api key cho composer
+|||varnish/
+||||default.vcl|Config cho varnish, được generate qua magento command
+||source/
+|||...||Code magento
+|||nginx.conf.sample||Config nginx có sẵn cung cấp bởi magento
+|||Dockerfile||Khai báo cho build image
+||docker-compose.yml|||Khai báo cho khởi chạy các container
+||.env|||Khai báo biến môi trường dùng cho `docker-compose.yml`. Có thể dùng hoặc không.
+
 ## 2. Build Magento 2 docker image
 
 ### a. Tải magento open source (bản community)
@@ -76,6 +100,9 @@ RUN apk update && apk add --no-cache \
         zip \
         sockets
 
+# Install Xdebug (optional)
+RUN pecl install xdebug && docker-php-ext-enable xdebug
+
 # Install Composer
 RUN curl -sS https://getcomposer.org/installer | php -- --install-dir=/usr/local/bin --filename=composer
 
@@ -99,7 +126,6 @@ File `.dockerignore` trong project root giúp bỏ đi các phần thừa khi bu
 !setup/
 !var/
 !generated/
-!m2-hotfixes/
 !nginx.conf.sample
 !docker-compose.yml
 
@@ -124,6 +150,7 @@ var/view_preprocessed/
 pub/static/frontend/
 pub/static/adminhtml/
 pub/media/tmp/
+pub/media/catalog/
 generated/code/
 generated/metadata/
 
@@ -147,39 +174,14 @@ Dockerfile
 
 ### c. Build image
 
-Chạy command
 ```bash
-docker build -t image_name path/to/folder/dockerfile
+cd /path/to/my_docker/source
+docker build -t image_name .
 ```
-- *image_name*: Tên của image, tủy chọn hoặc đặt tên theo rule của các registry platform
-- *path/to/folder/dockerfile*: Đường dẫn nơi chứa file Dockerfile, thông thường đặt trong folder chứa code
 
 ## 2. Khởi chạy Docker Container
 
-### a. Cấu trúc folder (Ví dụ demo)
-
-|#|#|#|#|#|
-|--|--|--|--|--|
-|my_docker/
-||docker/
-|||dbdata/||Dữ liệu của MySQL
-|||esdata/||Dữ liệu của Elasticsearch
-|||nginx/
-||||nginx.conf|Config cho webserver
-|||php/
-||||custom.ini|Config custom cho php
-|||composer/
-||||auth.json|Config api key cho composer
-|||varnish/
-||||default.vcl|Config cho varnish, được generate qua magento command
-||source/
-|||...||Code magento
-|||nginx.conf.sample||Config nginx có sẵn cung cấp bởi magento
-|||Dockerfile||Khai báo cho build image
-||docker-compose.yml|||Khai báo cho khởi chạy các container
-||.env|||Khai báo biến môi trường dùng cho `docker-compose.yml`. Có thể dùng hoặc không.
-
-### b. Viết docker-compose.yml
+#### a. Viết docker-compose.yml
 
 ```yml
 version: '3.8'
@@ -190,6 +192,7 @@ services:
     restart: unless-stopped
     volumes:
       - ./docker/php/custom.ini:/usr/local/etc/php/conf.d/custom.ini
+      - ./docker/php/custom-xdebug.ini:/usr/local/etc/php/conf.d/docker-php-ext-xdebug.ini
       - ./docker/composer/auth.json:/var/www/html/var/composer_home/auth.json
       - ./source:/var/www/html
     environment:
@@ -288,7 +291,7 @@ services:
       MP_SMTP_AUTH_ACCEPT_ANY: 1
       MP_SMTP_AUTH_ALLOW_INSECURE: 1
 ```
-#### - Thứ tự khởi tạo các Container
+#### b. Thứ tự khởi tạo các Container
 1. `db` + `redis` + `elasticsearch` + `mailpit`: không có phụ thuộc
 2. `app` + `phpmyadmin`
     - `app` phụ thuộc `db` + `redis` + `elasticsearch` + `mailpit`
@@ -296,7 +299,7 @@ services:
 3. `nginx`: phụ thuộc `app`
 4. `varnish_cache`: phụ thuộc `nginx`
 
-#### - Custom `php.ini`
+#### c. Config php
 ```ini
 ; Chỉnh sửa file ./docker/php/custom.ini
 
@@ -321,7 +324,27 @@ max_execution_time = 18000
 sendmail_path=/usr/sbin/sendmail -S mailpit:1025 -t
 ```
 
-#### - Khởi chạy container theo *docker-compose.yml*
+#### d. Config xdebug
+```ini
+# Edit custom-xdebug.ini
+# Xdebug version 3.x
+zend_extension = xdebug.so
+xdebug.mode = debug
+xdebug.start_with_request = default
+xdebug.client_host = host.docker.internal
+xdebug.client_port = 9003
+xdebug.log = /tmp/xdebug.log
+```
+config name|config value|mô tả
+:--:|:--:|--
+mode|debug|Chế độ debug
+start_with_request|default|Mặc định dựa vào điều kiện thỏa mãn để kích hoạt debug.<br>Việc này giúp tránh việc xdebug luôn bật gây performance kém khi develop.<br>Sử dụng function `xdebug_break()` để kích hoạt.
+client_host|host.docker.internal|hostname hoặc IP của client sử dụng PHPStorm.<br>Mặc định khi chạy docker, `host.docker.internal` ánh xạ tới bản thân thiết bị chứa docker.
+client_port|9003|Mặc định là 9003 nếu xdebug version là 3.x<br>Đây là port mà PHPStorm sẽ lắng nghe tín hiệu debug.
+log|/tmp/xdebug.log|Đường dẫn tới file chứa log của xdebug
+
+
+#### e. Khởi chạy container theo *docker-compose.yml*
 ```shell
 cd /path/to/my_docker/
 docker compose up -d
@@ -329,20 +352,20 @@ docker compose up -d
 - `-d`: cho phép chạy container ở chế độ detach, chạy trong nền
 - command này còn cho phép cập nhật phiên bản mới cho container nếu image tương ứng được thay thế bằng image khác
 
-#### - Loại bỏ container đã được khởi chạy theo *docker-compose.yml*
+#### f. Loại bỏ container đã được khởi chạy theo *docker-compose.yml*
 ```shell
 cd /path/to/my_docker/
 docker compose down
 ```
 
-#### - Start/Stop container đã được khởi chạy
+#### g. Start/Stop container đã được khởi chạy
 ```shell
 cd /path/to/my_docker/
 docker compose start
 docker compose stop
 ```
 
-#### - Đăng nhập vào bash terminal của một container cụ thể
+#### h. Đăng nhập vào bash terminal của một container cụ thể
 ```shell
 # `docker compose exec ten_service sh`
 cd /path/to/my_docker/
@@ -559,3 +582,89 @@ docker compose stop app
 > Lưu ý: Vì khi bị lỗi, `varnish cache` cũng cache lại kết quả lỗi, nên cần restart lại service `varnish cache` để thực hiện invalidate cho các response cache
 
 ---
+## 4. Xdebug với PHPStorm
+### a. Kiểm tra cài đặt xdebug
+```sh
+docker compose exec app php -v
+```
+Output như sau tức là xdebug đã được cài đặt với phiên bản `3.4.0`
+```
+PHP 8.3.15 (cli) (built: Dec 20 2024 21:33:45) (NTS)
+Copyright (c) The PHP Group
+Zend Engine v4.3.15, Copyright (c) Zend Technologies
+    with Zend OPcache v8.3.15, Copyright (c), by Zend Technologies
+    with Xdebug v3.4.0, Copyright (c) 2002-2024, by Derick Rethans
+```
+### b. Kiểm tra config xdebug
+Như từ đầu guide, file `custom-xdebug.ini` đã được viết và được ánh xạ vào container app qua `docker-compose.xml` \
+tức là config đã thành công, có thể kiểm tra lại các config như sau
+```sh
+docker compose exec app php -i | grep \
+  -e xdebug.mode \
+  -e xdebug.client_host \
+  -e xdebug.start_with_request \
+  -e xdebug.client_port \
+  -e xdebug.log 
+```
+Output như sau theo thứ tự "config_name => default_value => current_value"
+```
+xdebug.client_host => host.docker.internal => host.docker.internal
+xdebug.client_port => 9003 => 9003
+xdebug.log => /tmp/xdebug.log => /tmp/xdebug.log
+xdebug.mode => debug => debug
+xdebug.start_with_request => default => default
+```
+
+### c. Config PHPStorm
+- Truy cập `File > Settings > PHP > Debug`
+- Kiểm tra cài đặt `Xdebug`, thiết lập như hình, trong đó Debug port là 9003, mặc định PHPStorm đã config sẵn nên chỗ này không cần chỉnh sửa gì thêm
+
+  ![Config Xdebug](./images/xdebug-phpstorm-config.png)
+
+- Vào file `pub/index.php` trong source code và đặt function `xdebug_break()` vào đầu file
+  ```php
+  <?php
+  xdebug_break();
+  die();
+  
+  /**
+  * Public alias for the application entry point
+  *
+  * Copyright © Magento, Inc. All rights reserved.
+  * See COPYING.txt for license details.
+  */
+  .
+  .
+  .
+  ```
+
+- Bật con bọ trên thanh công cụ của PHPStorm
+
+  ![Enable Debug Listening](./images/xdebug-phpstorm-config-2.png)
+
+- Restart service varnish cache để xóa cache và truy cập lại vào trang web, một cửa sổ đặc biệt sẽ bật lên trong PHPStorm
+
+  ![Listen popup](./images/xdebug-phpstorm-config-3.png)
+
+  - Server name: Là `server_name` khai báo trong `nginx/default.conf`
+  - Các tham số đều là tự động, có thể bỏ qua và bấm `Accept`
+
+- Sau khi accept, PHPStorm sẽ dừng code tại dòng mà `xdebug_break()` được gọi, tức là xdebug đã hoạt động
+
+  ![Listen popup](./images/xdebug-phpstorm-config-4.png)
+
+- Tuy nhiên, mới chỉ có `index.php` được mapping, nếu `xdebug_break()` được gọi ở một file khác nằm ngoài thư mục pub, điều này sẽ làm cho PHPStorm không biết file nào để chạy tới debug.
+  - VD Nếu debug vào `app/bootstrap.php`
+  
+    ![Xdebug mapping error](./images/xdebug-phpstorm-config-5.png)
+
+  - Giải pháp là click vào `Click to setup path mappings` như trong hình, cửa sổ này sẽ mở lên và việc cần làm là mapping cả folder `source` ánh xạ tới `/var/www/html` và click `OK` là xong
+
+    ![Xdebug mapping source](./images/xdebug-phpstorm-config-6.png)
+
+> Chú ý: Như đã đề cập, phải xóa cache, tức là nếu mà request tương ứng đã bị cache mà request không gửi được tới service `app` thì xdebug sẽ không hoạt động.
+
+
+## 5. Kết bài
+
+Trên đây là đúc kết (vã sẽ có update thêm nếu có) về cách cá nhân mình học được và triển khai mô hình docker cho một ứng dụng magento 2. Nếu muốn góp ý có thể trực tiếp inbox cho mình. 🤣
